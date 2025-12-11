@@ -5,6 +5,38 @@ import re
 import time
 import io
 from datetime import datetime
+# ==============================================================================
+# 🔐 БЛОК АВТОРИЗАЦИИ (ЗАЩИТА ПАРОЛЕМ)
+# ==============================================================================
+def check_password():
+    """Возвращает True, если пользователь ввел правильный пароль."""
+    if "APP_PASSWORD" not in st.secrets:
+        return True  # Если пароль не задан в секретах, пускаем всех (или можно st.stop())
+
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
+    if not st.session_state["password_correct"]:
+        st.text_input(
+            "🔑 Введите пароль доступа", 
+            type="password", 
+            on_change=password_entered, 
+            key="password_input"
+        )
+        return False
+    return True
+
+def password_entered():
+    """Проверка введенного пароля."""
+    if st.session_state["password_input"] == st.secrets["APP_PASSWORD"]:
+        st.session_state["password_correct"] = True
+        del st.session_state["password_input"]  # Удаляем пароль из памяти
+    else:
+        st.session_state["password_correct"] = False
+        st.error("⛔ Неверный пароль")
+
+if not check_password():
+    st.stop()  # 🛑 ОСТАНОВИТЬ выполнение, если пароль не введен
 
 # ==============================================================================
 # 🔐 БЛОК КОНФИГУРАЦИИ (Берем из st.secrets для безопасности)
