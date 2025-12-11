@@ -5,13 +5,14 @@ import re
 import time
 import io
 from datetime import datetime
+
 # ==============================================================================
 # 🔐 БЛОК АВТОРИЗАЦИИ (ЗАЩИТА ПАРОЛЕМ)
 # ==============================================================================
 def check_password():
     """Возвращает True, если пользователь ввел правильный пароль."""
     if "APP_PASSWORD" not in st.secrets:
-        return True  # Если пароль не задан в секретах, пускаем всех (или можно st.stop())
+        return True
 
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
@@ -27,53 +28,86 @@ def check_password():
     return True
 
 def password_entered():
-    """Проверка введенного пароля."""
     if st.session_state["password_input"] == st.secrets["APP_PASSWORD"]:
         st.session_state["password_correct"] = True
-        del st.session_state["password_input"]  # Удаляем пароль из памяти
+        del st.session_state["password_input"]
     else:
         st.session_state["password_correct"] = False
         st.error("⛔ Неверный пароль")
 
+# ==============================================================================
+# ⚙️ НАСТРОЙКИ СТРАНИЦЫ
+# ==============================================================================
+st.set_page_config(page_title="HDE Orchestrator", page_icon="📢", layout="wide")
+
 if not check_password():
-    st.stop()  # 🛑 ОСТАНОВИТЬ выполнение, если пароль не введен
+    st.stop()
 
 # ==============================================================================
-# 🔐 БЛОК КОНФИГУРАЦИИ (Берем из st.secrets для безопасности)
+# 🔐 БЛОК КОНФИГУРАЦИИ API
 # ==============================================================================
-# Для локального запуска создай папку .streamlit и файл secrets.toml в ней
-# Либо пока тестируешь, можешь временно вписать сюда, но не публикуй!
-
 try:
     HDE_API_KEY = st.secrets["HDE_API_KEY"]
     HDE_EMAIL = st.secrets["HDE_EMAIL"]
     WA_TOKEN = st.secrets["WA_TOKEN"]
     WA_INSTANCE_ID = st.secrets["WA_INSTANCE_ID"]
 except:
-    # Заглушки, если секреты не настроены
-    st.error("⚠️ API ключи не найдены! Настрой secrets.toml")
+    st.error("⚠️ API ключи не найдены! Настрой secrets.toml в настройках Streamlit.")
     st.stop()
 
 HDE_URL = "https://qlean.helpdeskeddy.com/api/v2"
 WA_API_URL = f"https://api.1msg.io/{WA_INSTANCE_ID}/sendTemplate?token={WA_TOKEN}"
 hde_auth = (HDE_EMAIL, HDE_API_KEY)
 
-# ==============================================================================
-# ⚙️ НАСТРОЙКИ СООБЩЕНИЙ
-# ==============================================================================
-TG_MESSAGE_TEXT = """Заказ ждёт в пункте выдачи. При длительном хранении невостребованные вещи могут быть утилизированы."""
-WA_TEMPLATE_NAME = "poteri"
-WA_NAMESPACE = "49276b64_15e7_414d_8f35_6ab04bcaa5b1"
-WA_LANG_CODE = "ru"
-
-# HDE Fields
+# HDE Fields (Константы)
 HDE_FIELD_TYPE_ID = 33                  
 HDE_FIELD_TYPE_VALUE = "Рассылка: Забытые вещи" 
 HDE_FIELD_INITIATED_ID = 43 
-HDE_TAGS_LIST = ["рассылка"]
+
+# WA Константы (Namespace и язык обычно не меняются часто, но можно вынести если надо)
+WA_NAMESPACE = "49276b64_15e7_414d_8f35_6ab04bcaa5b1"
+WA_LANG_CODE = "ru"
 
 # ==============================================================================
-# 🛠 ФУНКЦИИ (Твоя логика)
+# 🎛️ БОКОВАЯ ПАНЕЛЬ НАСТРОЕК (НОВОЕ!)
+# ==============================================================================
+with st.sidebar:
+    st.header("⚙️ Настройки рассылки")
+    
+    # 1. Выбор режима
+    send_mode = st.radio(
+        "Режим отправки:",
+        ("Авто (ТГ, если нет -> WA)", "Только Telegram", "Только WhatsApp")
+    )
+    
+    st.markdown("---")
+    
+    # 2. Настройки Telegram
+    st.subheader("🔵 Telegram")
+    tg_text_input = st.text_area(
+        "Текст сообщения:", 
+        value="Заказ ждёт в пункте выдачи. При длительном хранении невостребованные вещи могут быть утилизированы.",
+        height=100
+    )
+    
+    tg_tags_input = st.text_input(
+        "Теги (через запятую):",
+        value="рассылка"
+    )
+    # Превращаем строку "tag1, tag2" в список ["tag1", "tag2"]
+    tg_tags_list = [tag.strip() for tag in tg_tags_input.split(",") if tag.strip()]
+
+    st.markdown("---")
+
+    # 3. Настройки WhatsApp
+    st.subheader("🟢 WhatsApp")
+    wa_template_input = st.text_input(
+        "Имя шаблона (Template Name):",
+        value="poteri"
+    )
+
+# ==============================================================================
+# 🛠 ФУНКЦИИ
 # ==============================================================================
 
 def normalize_phone_wa(phone):
@@ -88,7 +122,7 @@ def get_clean_core(phone):
     if len(d) == 10: return d
     return d
 
-def get_all_candidate_users(raw_phone, log_container):
+def get_all_candidate_users(raw_phone):
     core = get_clean_core(raw_phone)
     found_users_map = {}
     if len(core) != 10:
@@ -104,7 +138,7 @@ def get_all_candidate_users(raw_phone, log_container):
                 for u in data:
                     found_users_map[u['id']] = u
         except Exception: pass
-        time.sleep(0.1) # Чуть быстрее для веба
+        time.sleep(0.1) 
     
     return list(found_users_map.values())
 
@@ -122,15 +156,16 @@ def find_telegram_ticket_for_user(user_id):
     except: pass
     return None
 
-def send_hde_telegram_message(ticket_id):
+def send_hde_telegram_message(ticket_id, message_text):
     try:
-        r = requests.post(f"{HDE_URL}/tickets/{ticket_id}/posts/", json={"text": TG_MESSAGE_TEXT}, auth=hde_auth)
+        # Используем текст из input
+        r = requests.post(f"{HDE_URL}/tickets/{ticket_id}/posts/", json={"text": message_text}, auth=hde_auth)
         return r.status_code in [200, 201], r.text
     except Exception as e: return False, str(e)
 
-def update_hde_ticket_properties(ticket_id):
+def update_hde_ticket_properties(ticket_id, tags_list):
     payload = {
-        "tags": HDE_TAGS_LIST, 
+        "tags": tags_list, 
         "custom_fields": {
             str(HDE_FIELD_TYPE_ID): HDE_FIELD_TYPE_VALUE, 
             str(HDE_FIELD_INITIATED_ID): 1                
@@ -140,9 +175,9 @@ def update_hde_ticket_properties(ticket_id):
         requests.put(f"{HDE_URL}/tickets/{ticket_id}/", json=payload, auth=hde_auth)
     except: pass
 
-def send_whatsapp_direct(phone):
+def send_whatsapp_direct(phone, template_name):
     payload = {
-        "template": WA_TEMPLATE_NAME,
+        "template": template_name,
         "language": { "policy": "deterministic", "code": WA_LANG_CODE },
         "namespace": WA_NAMESPACE,
         "phone": normalize_phone_wa(phone)
@@ -158,103 +193,114 @@ def send_whatsapp_direct(phone):
     except Exception as e: return False, str(e)
 
 # ==============================================================================
-# 🖥️ ИНТЕРФЕЙС STREAMLIT
+# 🖥️ ОСНОВНОЙ ИНТЕРФЕЙС
 # ==============================================================================
 
-st.set_page_config(page_title="HDE Orchestrator", page_icon="📢")
-
 st.title("📢 Оркестратор рассылок")
-st.markdown("Загрузи Excel файл с номерами (колонка А), скрипт проверит HDE на наличие Telegram, иначе отправит в WhatsApp.")
+st.markdown("Настрой параметры слева, загрузи файл и запусти.")
 
 uploaded_file = st.file_uploader("Выберите файл .xlsx", type=["xlsx"])
 
 if uploaded_file:
-    # Чтение файла
     try:
         df_input = pd.read_excel(uploaded_file, header=None)
         phones = df_input.iloc[:, 0].dropna().astype(str).tolist()
-        # Чистка от заголовков
         phones = [p for p in phones if re.search(r'\d', p)]
         
         st.info(f"Найдено номеров: {len(phones)}")
         
+        # Отобразим текущие настройки для проверки
+        with st.expander("Проверьте параметры перед запуском"):
+            st.write(f"**Режим:** {send_mode}")
+            st.write(f"**Текст ТГ:** {tg_text_input}")
+            st.write(f"**Теги:** {tg_tags_list}")
+            st.write(f"**Шаблон WA:** {wa_template_input}")
+
         if st.button("🚀 ЗАПУСТИТЬ РАССЫЛКУ"):
             
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
             
-            # Контейнер для логов
             log_container = st.container()
             log_container.write("--- Лог выполнения ---")
 
             for i, phone in enumerate(phones):
-                # Обновление UI
                 progress = (i + 1) / len(phones)
                 progress_bar.progress(progress)
                 status_text.text(f"Обработка: {phone} ({i+1}/{len(phones)})")
                 
-                # Логика
                 res_uid, res_tg, res_wa, res_stat, res_info = "-", "-", "-", "ОШИБКА", ""
                 
-                candidates = get_all_candidate_users(phone, log_container)
+                # Поиск пользователей в HDE (нужен и для ТГ, и просто для инфо)
+                candidates = get_all_candidate_users(phone)
+                
+                # Флаги логики
+                should_try_tg = send_mode in ["Авто (ТГ, если нет -> WA)", "Только Telegram"]
+                should_try_wa = send_mode == "Только WhatsApp" # По умолчанию, если авто - переключим позже
+                
                 tg_sent = False
                 
-                # Поиск ТГ
-                target_ticket = None
-                if candidates:
-                    for user in candidates:
-                        tid = find_telegram_ticket_for_user(user['id'])
-                        if tid:
-                            target_ticket = tid
-                            res_uid = str(user['id'])
-                            break
-                
-                # Отправка ТГ
-                if target_ticket:
-                    ok, txt = send_hde_telegram_message(target_ticket)
-                    if ok:
-                        res_tg = "Отправлено"
-                        res_stat = "УСПЕХ"
-                        res_info = f"Ticket #{target_ticket}"
-                        tg_sent = True
-                        update_hde_ticket_properties(target_ticket)
-                        # log_container.success(f"{phone}: ✅ Telegram")
+                # --- ЛОГИКА TELEGRAM ---
+                if should_try_tg:
+                    target_ticket = None
+                    if candidates:
+                        for user in candidates:
+                            tid = find_telegram_ticket_for_user(user['id'])
+                            if tid:
+                                target_ticket = tid
+                                res_uid = str(user['id'])
+                                break
+                    
+                    if target_ticket:
+                        ok, txt = send_hde_telegram_message(target_ticket, tg_text_input)
+                        if ok:
+                            res_tg = "Отправлено"
+                            res_stat = "УСПЕХ"
+                            res_info = f"Ticket #{target_ticket}"
+                            tg_sent = True
+                            # Обновляем теги из input
+                            update_hde_ticket_properties(target_ticket, tg_tags_list)
+                        else:
+                            res_tg = "Сбой"
+                            res_info = txt
+                    elif candidates:
+                        res_tg = "Нет диалога"
+                        res_uid = str([u['id'] for u in candidates])
                     else:
-                        res_tg = "Сбой"
-                        res_info = txt
-                elif candidates:
-                     res_tg = "Нет диалога"
-                else:
-                     res_uid = "Не найден"
+                        res_uid = "Не найден"
 
-                # Отправка WA
-                if not tg_sent:
-                    ok, txt = send_whatsapp_direct(phone)
+                # --- ЛОГИКА WHATSAPP ---
+                # Если режим Авто и ТГ не ушел -> пробуем WA
+                if send_mode == "Авто (ТГ, если нет -> WA)" and not tg_sent:
+                    should_try_wa = True
+                
+                if should_try_wa:
+                    ok, txt = send_whatsapp_direct(phone, wa_template_input)
                     if ok:
                         res_wa = "Отправлено"
                         res_stat = "УСПЕХ"
                         res_info += f" | {txt}"
-                        # log_container.warning(f"{phone}: ✅ WhatsApp")
                     else:
                         res_wa = "Сбой"
                         res_info += f" | WA Err: {txt}"
-                        # log_container.error(f"{phone}: ❌ Fail")
 
+                # Если режим "Только ТГ", но ТГ не ушел -> статус не успех, если не нашли
+                if send_mode == "Только Telegram" and not tg_sent and res_tg == "Сбой":
+                     res_stat = "ОШИБКА"
+                
+                # Формируем строку отчета
                 results.append([phone, res_uid, res_tg, res_wa, res_stat, res_info])
-                time.sleep(0.5) # Пауза, чтобы API не забанил
+                time.sleep(0.5)
 
             st.success("✅ Рассылка завершена!")
             
-            # Создание отчета для скачивания
             df_res = pd.DataFrame(results, columns=["Телефон", "HDE ID", "Telegram", "WhatsApp", "Статус", "Инфо"])
             st.dataframe(df_res)
             
-            # Конвертация в Excel в памяти
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df_res.to_excel(writer, index=False, sheet_name='Report')
-                # Здесь можно добавить раскраску ячеек, как у тебя было, через writer.sheets['Report']
             
             st.download_button(
                 label="📥 Скачать отчет .xlsx",
@@ -264,4 +310,4 @@ if uploaded_file:
             )
 
     except Exception as e:
-        st.error(f"Ошибка при чтении файла: {e}")
+        st.error(f"Ошибка: {e}")
