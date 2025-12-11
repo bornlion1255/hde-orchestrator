@@ -59,17 +59,16 @@ HDE_URL = "https://qlean.helpdeskeddy.com/api/v2"
 WA_API_URL = f"https://api.1msg.io/{WA_INSTANCE_ID}/sendTemplate?token={WA_TOKEN}"
 hde_auth = (HDE_EMAIL, HDE_API_KEY)
 
-# HDE Fields (Константы)
+# HDE Fields (ID полей)
 HDE_FIELD_TYPE_ID = 33                  
-HDE_FIELD_TYPE_VALUE = "Рассылка: Забытые вещи" 
 HDE_FIELD_INITIATED_ID = 43 
 
-# WA Константы (Namespace и язык обычно не меняются часто, но можно вынести если надо)
+# WA Константы
 WA_NAMESPACE = "49276b64_15e7_414d_8f35_6ab04bcaa5b1"
 WA_LANG_CODE = "ru"
 
 # ==============================================================================
-# 🎛️ БОКОВАЯ ПАНЕЛЬ НАСТРОЕК (НОВОЕ!)
+# 🎛️ БОКОВАЯ ПАНЕЛЬ НАСТРОЕК
 # ==============================================================================
 with st.sidebar:
     st.header("⚙️ Настройки рассылки")
@@ -82,8 +81,18 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 2. Настройки Telegram
-    st.subheader("🔵 Telegram")
+    # 2. Настройки Telegram / HDE
+    st.subheader("🔵 Telegram / HDE")
+    
+    # --- НОВОЕ: ТЕМА РАССЫЛКИ ---
+    ticket_subject_suffix = st.text_input(
+        "Тема рассылки (после 'Рассылка: '):",
+        value="Забытые вещи"
+    )
+    # Автоматически склеиваем префикс и то, что ввел пользователь
+    full_ticket_type_value = f"Рассылка: {ticket_subject_suffix}"
+    st.caption(f"📝 В поле 'Тип обращения' запишется: **{full_ticket_type_value}**")
+
     tg_text_input = st.text_area(
         "Текст сообщения:", 
         value="Заказ ждёт в пункте выдачи. При длительном хранении невостребованные вещи могут быть утилизированы.",
@@ -94,7 +103,6 @@ with st.sidebar:
         "Теги (через запятую):",
         value="рассылка"
     )
-    # Превращаем строку "tag1, tag2" в список ["tag1", "tag2"]
     tg_tags_list = [tag.strip() for tag in tg_tags_input.split(",") if tag.strip()]
 
     st.markdown("---")
@@ -158,16 +166,15 @@ def find_telegram_ticket_for_user(user_id):
 
 def send_hde_telegram_message(ticket_id, message_text):
     try:
-        # Используем текст из input
         r = requests.post(f"{HDE_URL}/tickets/{ticket_id}/posts/", json={"text": message_text}, auth=hde_auth)
         return r.status_code in [200, 201], r.text
     except Exception as e: return False, str(e)
 
-def update_hde_ticket_properties(ticket_id, tags_list):
+def update_hde_ticket_properties(ticket_id, tags_list, type_value):
     payload = {
         "tags": tags_list, 
         "custom_fields": {
-            str(HDE_FIELD_TYPE_ID): HDE_FIELD_TYPE_VALUE, 
+            str(HDE_FIELD_TYPE_ID): type_value,  # Подставляем собранное значение
             str(HDE_FIELD_INITIATED_ID): 1                
         }
     }
@@ -209,9 +216,9 @@ if uploaded_file:
         
         st.info(f"Найдено номеров: {len(phones)}")
         
-        # Отобразим текущие настройки для проверки
         with st.expander("Проверьте параметры перед запуском"):
             st.write(f"**Режим:** {send_mode}")
+            st.write(f"**Тип обращения:** {full_ticket_type_value}")
             st.write(f"**Текст ТГ:** {tg_text_input}")
             st.write(f"**Теги:** {tg_tags_list}")
             st.write(f"**Шаблон WA:** {wa_template_input}")
@@ -232,12 +239,10 @@ if uploaded_file:
                 
                 res_uid, res_tg, res_wa, res_stat, res_info = "-", "-", "-", "ОШИБКА", ""
                 
-                # Поиск пользователей в HDE (нужен и для ТГ, и просто для инфо)
                 candidates = get_all_candidate_users(phone)
                 
-                # Флаги логики
                 should_try_tg = send_mode in ["Авто (ТГ, если нет -> WA)", "Только Telegram"]
-                should_try_wa = send_mode == "Только WhatsApp" # По умолчанию, если авто - переключим позже
+                should_try_wa = send_mode == "Только WhatsApp"
                 
                 tg_sent = False
                 
@@ -259,8 +264,8 @@ if uploaded_file:
                             res_stat = "УСПЕХ"
                             res_info = f"Ticket #{target_ticket}"
                             tg_sent = True
-                            # Обновляем теги из input
-                            update_hde_ticket_properties(target_ticket, tg_tags_list)
+                            # Обновляем тип обращения и теги
+                            update_hde_ticket_properties(target_ticket, tg_tags_list, full_ticket_type_value)
                         else:
                             res_tg = "Сбой"
                             res_info = txt
@@ -271,7 +276,6 @@ if uploaded_file:
                         res_uid = "Не найден"
 
                 # --- ЛОГИКА WHATSAPP ---
-                # Если режим Авто и ТГ не ушел -> пробуем WA
                 if send_mode == "Авто (ТГ, если нет -> WA)" and not tg_sent:
                     should_try_wa = True
                 
@@ -285,11 +289,9 @@ if uploaded_file:
                         res_wa = "Сбой"
                         res_info += f" | WA Err: {txt}"
 
-                # Если режим "Только ТГ", но ТГ не ушел -> статус не успех, если не нашли
                 if send_mode == "Только Telegram" and not tg_sent and res_tg == "Сбой":
                      res_stat = "ОШИБКА"
                 
-                # Формируем строку отчета
                 results.append([phone, res_uid, res_tg, res_wa, res_stat, res_info])
                 time.sleep(0.5)
 
@@ -308,6 +310,9 @@ if uploaded_file:
                 file_name=f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.ms-excel"
             )
+
+    except Exception as e:
+        st.error(f"Ошибка: {e}")
 
     except Exception as e:
         st.error(f"Ошибка: {e}")
